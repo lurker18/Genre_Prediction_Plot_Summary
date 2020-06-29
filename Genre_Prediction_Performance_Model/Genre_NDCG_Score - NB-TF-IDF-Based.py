@@ -1,0 +1,381 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Jun 27 18:06:13 2020
+
+@author: Hydra18
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import re
+
+import nltk
+from nltk.corpus import stopwords
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score, accuracy_score
+from sklearn.preprocessing import MultiLabelBinarizer
+from sklearn.multiclass import OneVsRestClassifier
+
+# Models
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import LinearSVC
+from sklearn.naive_bayes import MultinomialNB
+
+movies = pd.read_excel('Movies3.xlsx', header = 0, encoding = 'utf-8')
+#movies.info()
+sample = movies.loc[:, ['Title', 'Movie_ID', 'Synopsis', 'Genre1', 'Genre2', 'Genre3']]
+train = sample
+cols = ['Genre1', 'Genre2', 'Genre3']
+train['Genre'] = list(train[cols].apply(lambda x: ','.join(x.dropna()).split(','), axis = 1))
+train.drop(['Genre1', 'Genre2', 'Genre3'], axis = 1, inplace = True)
+#len(train)
+#train
+all_genres = sum(train.Genre, [])
+#len(set(all_genres))
+
+
+all_genres = nltk.FreqDist(all_genres) # 5-Genres
+all_genres_df = pd.DataFrame({'Genre' : list(all_genres.keys()),
+                              'Count' : list(all_genres.values())})
+
+
+all_genres_df.groupby(by = 'Genre').sum()
+
+#g = all_genres_df.nlargest(columns = "Count", n = 50)
+#plt.figure(figsize = (12, 15))
+#ax = sns.barplot(data = g, x = "Count",  y= "Genre")
+#ax.set(ylabel = 'Count')
+#plt.show()
+
+def clean_text(text):
+    text = re.sub("\'", "", text)
+    text = re.sub("[^a-zA-Z]", " ", text)    
+    text = ' '.join(text.split())
+    text = text.lower()
+    return text
+
+train['clean_plot'] = train['Synopsis'].apply(lambda x: clean_text(x))
+#train['Synopsis'][0]
+#train['clean_plot'][0]
+
+
+
+def freq_words(x, terms = 30):
+    all_words = ' '.join([text for text in x])
+    all_words = all_words.split()
+    fdist = nltk.FreqDist(all_words)
+    words_df = pd.DataFrame({'word': list(fdist.keys()), 'count': list(fdist.values())})
+    d = words_df.nlargest(columns = "count", n = terms)
+    plt.figure(figsize = (12, 15))
+    ax = sns.barplot(data = d, x = "count", y = "word")
+    ax.set(ylabel = 'Word')
+    plt.show()
+    
+    
+#freq_words(train['clean_plot'], 50)
+stop_words = set(stopwords.words('english'))
+
+def remove_stopwords(text):
+    no_stopword_text = [w for w in text.split() if not w in stop_words]
+    return ' '.join(no_stopword_text)
+
+train['clean_plot'] = train['clean_plot'].apply(lambda x: remove_stopwords(x))
+
+#freq_words(train['clean_plot'], 50)
+
+
+multilabel_binarizer = MultiLabelBinarizer()
+multilabel_binarizer.fit(train['Genre'])
+
+y = multilabel_binarizer.transform(train['Genre'])
+tfidf_vectorizer = TfidfVectorizer(stop_words="english", ngram_range = (1,2)) # n_grams: Uni-Grams & Bi-Grams
+
+
+X_train, X_test, y_train, y_test = train_test_split(train['clean_plot'], y , test_size = 0.2, random_state = np.random.randint(1000), shuffle = True)
+
+
+
+xtrain_tfidf = tfidf_vectorizer.fit_transform(X_train)
+xtest_tfidf = tfidf_vectorizer.transform(X_test)
+
+
+def train_classifier(X_train, y_train, X_valid=None, y_valid=None, C=1.0, model='lr'):
+
+    if model=='lr':
+        model = LogisticRegression(C=C, penalty='l1', dual=False, solver='liblinear')
+        model = OneVsRestClassifier(model)
+        model.fit(X_train, y_train)
+    
+    elif model=='svm':
+        model = LinearSVC(C=C, penalty='l1', dual=False, loss='squared_hinge')
+        model = OneVsRestClassifier(model)
+        model.fit(X_train, y_train)
+    
+    elif model=='nbayes':
+        model = MultinomialNB(alpha=1.0)
+        model = OneVsRestClassifier(model)
+        model.fit(X_train, y_train)
+        
+    return model
+
+
+classifier_tfidf = train_classifier(xtrain_tfidf, y_train, model='nbayes')
+
+
+train_y_pred = classifier_tfidf.predict(xtrain_tfidf)
+test_y_pred = classifier_tfidf.predict(xtest_tfidf)
+
+# Inverse of my y_prediction into displayable genres
+test_y_pred[0]
+list(multilabel_binarizer.inverse_transform(test_y_pred)[0])
+
+
+
+# F1-Score Evaluation Score - Micro Vs Macro
+# Train
+print(round(f1_score(y_train, train_y_pred, average = 'micro'), 3))
+print(round(f1_score(y_train, train_y_pred, average = 'macro'), 3))
+# Test
+print(round(f1_score(y_test, test_y_pred, average = 'micro'), 3))
+print(round(f1_score(y_test, test_y_pred, average = 'macro'), 3))
+
+
+
+# Accuracy_score - Train vs Test
+print(accuracy_score(y_train, train_y_pred))
+print(accuracy_score(y_test, test_y_pred))
+
+
+def infer_genres(q):
+    q = clean_text(q)
+    q = remove_stopwords(q)
+    q_vec = tfidf_vectorizer.transform([q])
+    q_pred = classifier_tfidf.predict(q_vec)
+    return np.array(multilabel_binarizer.inverse_transform(q_pred))
+
+###########################################################################################
+def Genre_NDCG_Score():
+    zero = 0
+    if len(actual_genres) == 0:
+        predict_relevance = zero
+        best_relevance = zero
+        return predict_relevance, best_relevance
+
+    elif len(actual_genres) == 1:
+        best_relevance = [3]
+        predict_relevance = []
+        try:
+            if pred_genres[0] == actual_genres[0]:
+                predict_relevance.append(3)
+            elif pred_genres[0] == actual_genres[1]:
+                predict_relevance.append(2)
+            elif pred_genres[0] == actual_genres[2]:
+                predict_relevance.append(1)
+            else:
+                predict_relevance.append(zero)
+        
+            try:
+                if pred_genres[1] == actual_genres[0]:
+                    predict_relevance.append(3)
+                elif pred_genres[1] == actual_genres[1]:
+                    predict_relevance.append(2)
+                elif pred_genres[1] == actual_genres[2]:
+                    predict_relevance.append(1)
+                else:
+                    predict_relevance.append(zero)
+            
+            except IndexError:
+                return predict_relevance, best_relevance
+            
+        except IndexError:
+            predict_relevance = [zero]
+            return predict_relevance, best_relevance
+
+    elif len(actual_genres) == 2:
+        best_relevance = [3, 2]
+        predict_relevance = []
+        try:
+            if pred_genres[0] == actual_genres[0]:
+                predict_relevance.append(3)
+            elif pred_genres[0] == actual_genres[1]:
+                predict_relevance.append(2)
+            elif pred_genres[0] == actual_genres[2]:
+                predict_relevance.append(1)
+            else:
+                predict_relevance.append(zero)
+        
+            try:
+                if pred_genres[1] == actual_genres[0]:
+                    predict_relevance.append(3)
+                elif pred_genres[1] == actual_genres[1]:
+                    predict_relevance.append(2)
+                elif pred_genres[1] == actual_genres[2]:
+                    predict_relevance.append(1)
+                else:
+                    predict_relevance.append(0)
+                return predict_relevance, best_relevance
+                    
+            except IndexError:
+                if len(pred_genres) == 1:
+                    return predict_relevance, best_relevance
+                else:
+                    predict_relevance.append(zero)
+                    return predict_relevance, best_relevance
+        
+        except IndexError:
+            if len(pred_genres) == 0:
+                predict_relevance.append(zero)
+                return predict_relevance, best_relevance
+            else:
+                zeros = [0, 0]
+                predict_relevance = zeros
+                return predict_relevance, best_relevance
+
+    elif len(actual_genres) == 3:
+        best_relevance = [3,2,1]
+        predict_relevance = []
+        try:
+            if pred_genres[0] == actual_genres[0]:
+                predict_relevance.append(3)
+            elif pred_genres[0] == actual_genres[1]:
+                predict_relevance.append(2)
+            elif pred_genres[0] == actual_genres[2]:
+                predict_relevance.append(1)
+            else:
+                predict_relevance.append(zero)
+        
+            try:
+                if pred_genres[1] == actual_genres[0]:
+                    predict_relevance.append(3)
+                elif pred_genres[1] == actual_genres[1]:
+                    predict_relevance.append(2)
+                elif pred_genres[1] == actual_genres[2]:
+                    predict_relevance.append(1)
+                else:
+                    predict_relevance.append(zero)
+                
+            except IndexError:
+                return predict_relevance, best_relevance
+                
+            try:
+                if pred_genres[2] == actual_genres[0]:
+                    predict_relevance.append(3)
+                elif pred_genres[2] == actual_genres[1]:
+                    predict_relevance.append(2)
+                elif pred_genres[2] == actual_genres[2]:
+                    predict_relevance.append(1)
+                else:
+                    predict_relevance.append(zero)
+                    
+                return predict_relevance, best_relevance
+        
+            except IndexError:
+                if len(pred_genres) == 1:
+                    return predict_relevance, best_relevance
+                elif len(pred_genres) == 2:
+                    return predict_relevance, best_relevance
+
+        except IndexError:
+            if len(pred_genres) == 0 and len(actual_genres) == 0:
+                best_relevance = [0]
+                predict_relevance = [zero]
+                return predict_relevance, best_relevance
+            elif len(pred_genres) == 0 and len(actual_genres) == 1:
+                best_relevance = [3]
+                predict_relevance = [zero]
+                return predict_relevance, best_relevance
+            elif len(pred_genres) == 0 and len(actual_genres) == 2:
+                best_relevance = [3, 2]
+                predict_relevance = [zero]
+                return predict_relevance, best_relevance
+            elif len(pred_genres) == 0 and len(actual_genres) == 3:
+                best_relevance = [3,2,1]
+                predict_relevance = [zero]
+                return predict_relevance, best_relevance
+
+
+def cumulative_gain_score(rel_list, p):
+    return sum(rel_list[:p])
+    
+def discounted_cumulative_gain_score(rel_list, p):
+    dcg = rel_list[0]
+    for idx in range(1, p):
+        dcg += (rel_list[idx] / np.log2(idx+1))
+    return dcg
+
+###############################################################################
+# Test Sample
+for i in range(10):
+    k = X_test.sample(1).index[0]
+    print("Movie: ", train['Title'][k], "\nPredicted Genres: ", infer_genres(X_test[k])), print("Actual Genres: ", train['Genre'][k], "\n")
+
+############################################################################
+# Train Sample
+for i in range(2):
+    k = X_train.sample(1).index[0]
+    print("Movie: ", train['Title'][k], "\nPredicted Genres: ", infer_genres(X_train[k])), print("Actual Genres: ", train['Genre'][k], "\n")
+    
+###############################################################################
+# Train : NDCG-Score
+ndcg = []
+for i in range(len(X_train)):
+    #k = X_train.sample(1).index[0]
+    k = X_train.index[i]
+    pred_genres = infer_genres(X_train[k]).ravel() # Predicted_Genres
+    actual_genres = np.array(train['Genre'][k]) # Actual_Genres
+    rank_relevant_score, ideal_vector = Genre_NDCG_Score()
+
+    # CG / ICG / DCG / IDCG    
+    #print("CG :", cumulative_gain_score(rank_relevant_score, p=len(rank_relevant_score)))
+    #print("ICG :", cumulative_gain_score(ideal_vector, p=len(ideal_vector)))
+    #print("DCG :", discounted_cumulative_gain_score(rank_relevant_score, p=len(rank_relevant_score)))
+    #print("IDCG :", discounted_cumulative_gain_score(ideal_vector, p=len(ideal_vector)))
+
+    dcg = discounted_cumulative_gain_score(rank_relevant_score, p = len(rank_relevant_score))
+    idcg = discounted_cumulative_gain_score(ideal_vector, p = len(ideal_vector))
+
+    # NDCG
+    temp = dcg / idcg
+    ndcg.append(temp)
+    print("NDCG :", np.mean(ndcg))
+
+
+
+#len(ndcg) == len(X_train)
+Train_Final_NDCG_Score = np.mean(ndcg)
+print(round(Train_Final_NDCG_Score, 3))
+
+
+##########################################################################################
+###############################################################################
+# Test : NDCG-Score
+ndcg = []
+for i in range(len(X_test)):
+    k = X_test.sample(1).index[0]
+    pred_genres = infer_genres(X_test[k]).ravel() # Predicted_Genres
+    actual_genres = np.array(train['Genre'][k]) # Actual_Genres
+    rank_relevant_score, ideal_vector = Genre_NDCG_Score()
+
+    # CG / ICG / DCG / IDCG    
+    #print("CG :", cumulative_gain_score(rank_relevant_score, p=len(rank_relevant_score)))
+    #print("ICG :", cumulative_gain_score(ideal_vector, p=len(ideal_vector)))
+    #print("DCG :", discounted_cumulative_gain_score(rank_relevant_score, p=len(rank_relevant_score)))
+    #print("IDCG :", discounted_cumulative_gain_score(ideal_vector, p=len(ideal_vector)))
+
+    dcg = discounted_cumulative_gain_score(rank_relevant_score, p = len(rank_relevant_score))
+    idcg = discounted_cumulative_gain_score(ideal_vector, p = len(ideal_vector))
+
+    # NDCG
+    temp = dcg / idcg
+    ndcg.append(temp)
+    print("NDCG :", np.mean(ndcg))
+
+
+#len(ndcg) == len(X_test)
+Test_Final_NDCG_Score = np.mean(ndcg)
+print(round(Test_Final_NDCG_Score, 3))
+
